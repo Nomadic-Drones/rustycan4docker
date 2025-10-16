@@ -1,3 +1,5 @@
+This repo is a fork from [ngpbach/rustycan4docker](https://github.com/ngpbach/rustycan4docker) in order to publish multiarch images. This was needed to support arm64 in rustycan4docker.
+
 # VXCAN Network Plugin for Docker
 
 This Docker plugin provides the ability to create VXCAN tunnels for Docker containers. It is based heavily on the work by Christain Gagneraud (https://gitlab.com/chgans/can4docker) and Wiktor S. Ovalle Correa (https://github.com/wsovalle/docker-vxcan).
