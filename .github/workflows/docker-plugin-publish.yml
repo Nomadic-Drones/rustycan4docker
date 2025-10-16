@@ -90,14 +90,6 @@ jobs:
             echo "Failed to push plugin, retrying with expected name: $PLUGIN_NAME"
             docker plugin push "$PLUGIN_NAME"
           }
-          
-          # Also tag and push as latest if this is a release
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "Creating latest plugin: $PLUGIN_NAME_LATEST"
-            docker plugin create $PLUGIN_NAME_LATEST docker-plugin/
-            echo "Pushing latest plugin: $PLUGIN_NAME_LATEST" 
-            docker plugin push $PLUGIN_NAME_LATEST
-          fi
 
   create-manifest:
     runs-on: ubuntu-latest
