@@ -28,7 +28,7 @@ docker run --rm -it --name a1 alpine
 docker run --rm -it --name a2 alpine
 
 # Create the network
-docker network create --driver rustyvxcan -o vxcan.dev=vcan -o vxcan.id=0 -o vxcan.peer=vxcanp rust_can1
+docker network create --driver nomadicdrones/rustycan4docker -o vxcan.dev=vcan -o vxcan.id=0 -o vxcan.peer=vxcanp rust_can1
 
 # Connect the network to the containers
 docker network connect rust_can1 a1
@@ -55,7 +55,7 @@ docker-compose applications can make use of the plugin as well.
 ```
 networks:
   canbus:
-    driver: rustyvxcan
+    driver: nomadicdrones/rustycan4docker
     driver_opts:
       vxcan.dev: can
       vxcan.peer: can
@@ -63,7 +63,48 @@ networks:
 ```
 
 ### Plugin Installation
+
+#### From Docker Hub (Recommended)
+```bash
+# Install the latest version (automatically detects your architecture)
+docker plugin install nomadicdrones/rustycan4docker:latest
+
+# Or install a specific version
+docker plugin install nomadicdrones/rustycan4docker:v0.1.0
+
+# For specific architectures (if needed):
+# AMD64: docker plugin install nomadicdrones/rustycan4docker-amd64:latest
+# ARM64: docker plugin install nomadicdrones/rustycan4docker-arm64:latest
+
+# Enable the plugin
+docker plugin enable nomadicdrones/rustycan4docker
 ```
-PLUGIN_NAME="vxcan4docker" ./docker-plugin/build-plugin.sh
-docker plugin enable vxcan4docker
+
+#### From Source
+```bash
+# Clone the repository
+git clone https://github.com/Nomadic-Drones/rustycan4docker.git
+cd rustycan4docker
+
+# Build and install locally
+cd docker-plugin
+sudo ./build-plugin.sh
+docker plugin enable nomadicdrones/rustycan4docker
+```
+
+### Supported Architectures
+
+This plugin supports multiple architectures:
+- **AMD64** (x86_64) - Intel/AMD 64-bit processors
+- **ARM64** (aarch64) - ARM 64-bit processors (Raspberry Pi 4+, Apple Silicon, etc.)
+
+The plugin automatically detects and installs the correct version for your system architecture.
+
+### Usage After Installation
+
+Once installed, use `nomadicdrones/rustycan4docker` as the driver name:
+
+```bash
+# Create the network using the installed plugin
+docker network create --driver nomadicdrones/rustycan4docker -o vxcan.dev=vcan -o vxcan.id=0 -o vxcan.peer=vxcanp rust_can1
 ```

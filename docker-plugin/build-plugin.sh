@@ -4,7 +4,7 @@ set -euxo
 # https://docs.docker.com/engine/extend/#developing-a-plugin
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-PLUGIN_NAME="${PLUGIN_NAME:-ngpbach/rustycan4docker}"
+PLUGIN_NAME="${PLUGIN_NAME:-nomadicdrones/rustycan4docker}"
 IMAGE_NAME=rustycan4docker:plugin_build_stage
 PLUGIN_DIR="${SCRIPT_DIR}"
 SOURCE_DIR="${SCRIPT_DIR}"/..

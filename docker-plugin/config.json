@@ -1,6 +1,6 @@
 {
     "description": "Network driver to construct and manage CAN bus network for docker.", 
-    "documentation": "https://github.com/ngpbach/rustycan4docker",
+    "documentation": "https://github.com/Nomadic-Drones/rustycan4docker",
     "entrypoint": ["/usr/local/bin/rustycan4docker"],
     "network": {
 	"type": "host"

@@ -1,0 +1,146 @@
+name: Build and push Docker plugin images
+permissions:
+  contents: read
+  packages: write
+  pull-requests: read
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: ["master"]
+    tags: ["v*"]
+  release:
+    types: [published]
+
+env:
+  PLUGIN_NAME: nomadicdrones/rustycan4docker
+
+jobs:
+  build-and-test:
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-amd64
+          - arch: arm64
+            runner: ubuntu-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build plugin locally
+        run: |
+          cd docker-plugin
+          chmod +x build-plugin.sh
+          export PLUGIN_NAME="${{ env.PLUGIN_NAME }}-${{ matrix.arch }}"
+          sudo ./build-plugin.sh
+      
+      - name: Test plugin
+        run: |
+          docker plugin ls | grep rustycan4docker
+
+  publish-plugin:
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-amd64
+          - arch: arm64
+            runner: ubuntu-arm64
+    runs-on: ${{ matrix.runner }}
+    needs: build-and-test
+    if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      
+      - name: Extract version
+        id: extract_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=$(grep '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+      
+      - name: Build and push plugin
+        run: |
+          cd docker-plugin
+          chmod +x build-plugin.sh
+          
+          # Build architecture-specific plugin
+          export PLUGIN_NAME="${{ env.PLUGIN_NAME }}-${{ matrix.arch }}:${{ steps.extract_version.outputs.version }}"
+          export PLUGIN_NAME_LATEST="${{ env.PLUGIN_NAME }}-${{ matrix.arch }}:latest"
+          
+          # Build plugin
+          sudo ./build-plugin.sh
+          
+          # Push versioned plugin
+          docker plugin push $PLUGIN_NAME
+          
+          # Also tag and push as latest if this is a release
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            docker plugin create $PLUGIN_NAME_LATEST docker-plugin/
+            docker plugin push $PLUGIN_NAME_LATEST
+          fi
+
+  create-manifest:
+    runs-on: ubuntu-latest
+    needs: publish-plugin
+    if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      
+      - name: Extract version
+        id: extract_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=$(grep '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+      
+      - name: Create and push multi-arch manifest
+        run: |
+          # Create manifest for versioned release
+          docker manifest create ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }} \
+            ${{ env.PLUGIN_NAME }}-amd64:${{ steps.extract_version.outputs.version }} \
+            ${{ env.PLUGIN_NAME }}-arm64:${{ steps.extract_version.outputs.version }}
+          
+          docker manifest push ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }}
+          
+          # Create manifest for latest if this is a release
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            docker manifest create ${{ env.PLUGIN_NAME }}:latest \
+              ${{ env.PLUGIN_NAME }}-amd64:latest \
+              ${{ env.PLUGIN_NAME }}-arm64:latest
+            
+            docker manifest push ${{ env.PLUGIN_NAME }}:latest
+          fi
