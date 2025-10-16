@@ -61,15 +61,41 @@ jobs:
           export PLUGIN_NAME="${{ env.PLUGIN_NAME }}-${{ matrix.arch }}:${{ steps.extract_version.outputs.version }}"
           export PLUGIN_NAME_LATEST="${{ env.PLUGIN_NAME }}-${{ matrix.arch }}:latest"
           
+          # Debug: Show what we're building
+          echo "Building plugin with name: $PLUGIN_NAME"
+          echo "Latest plugin name: $PLUGIN_NAME_LATEST"
+          echo "Architecture: ${{ matrix.arch }}"
+          echo "Version: ${{ steps.extract_version.outputs.version }}"
+          
           # Build plugin
           sudo ./build-plugin.sh
           
-          # Push versioned plugin
-          docker plugin push $PLUGIN_NAME
+          # Verify plugin was created
+          echo "Plugins after build:"
+          docker plugin ls
+          
+          # Check if our plugin exists
+          if ! docker plugin ls | grep -q "rustycan4docker"; then
+            echo "ERROR: Plugin was not created successfully"
+            exit 1
+          fi
+          
+          # Get the actual plugin name from docker plugin ls
+          ACTUAL_PLUGIN_NAME=$(docker plugin ls --format "table {{.Name}}" | grep rustycan4docker | head -n 1)
+          echo "Actual plugin name created: $ACTUAL_PLUGIN_NAME"
+          
+          # Push versioned plugin using the actual name
+          echo "Pushing plugin: $ACTUAL_PLUGIN_NAME"
+          docker plugin push "$ACTUAL_PLUGIN_NAME" || {
+            echo "Failed to push plugin, retrying with expected name: $PLUGIN_NAME"
+            docker plugin push "$PLUGIN_NAME"
+          }
           
           # Also tag and push as latest if this is a release
           if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "Creating latest plugin: $PLUGIN_NAME_LATEST"
             docker plugin create $PLUGIN_NAME_LATEST docker-plugin/
+            echo "Pushing latest plugin: $PLUGIN_NAME_LATEST" 
             docker plugin push $PLUGIN_NAME_LATEST
           fi
 
@@ -100,18 +126,45 @@ jobs:
       
       - name: Create and push multi-arch manifest
         run: |
+          # Wait a moment for plugins to be available
+          sleep 10
+          
+          # Check if both architecture plugins exist
+          echo "Checking for required plugins..."
+          if ! docker plugin ls --format "{{.Repository}}" | grep -q "${{ env.PLUGIN_NAME }}-amd64"; then
+            echo "AMD64 plugin not found in registry"
+            docker search ${{ env.PLUGIN_NAME }}-amd64 || echo "Search failed"
+          fi
+          
+          if ! docker plugin ls --format "{{.Repository}}" | grep -q "${{ env.PLUGIN_NAME }}-arm64"; then
+            echo "ARM64 plugin not found in registry"
+            docker search ${{ env.PLUGIN_NAME }}-arm64 || echo "Search failed"
+          fi
+          
           # Create manifest for versioned release
+          echo "Creating manifest for version ${{ steps.extract_version.outputs.version }}"
           docker manifest create ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }} \
             ${{ env.PLUGIN_NAME }}-amd64:${{ steps.extract_version.outputs.version }} \
-            ${{ env.PLUGIN_NAME }}-arm64:${{ steps.extract_version.outputs.version }}
+            ${{ env.PLUGIN_NAME }}-arm64:${{ steps.extract_version.outputs.version }} || {
+            echo "Failed to create versioned manifest, trying without explicit pulls..."
+            docker manifest create --amend ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }} \
+              ${{ env.PLUGIN_NAME }}-amd64:${{ steps.extract_version.outputs.version }} \
+              ${{ env.PLUGIN_NAME }}-arm64:${{ steps.extract_version.outputs.version }}
+          }
           
           docker manifest push ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }}
           
           # Create manifest for latest if this is a release
           if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "Creating latest manifest..."
             docker manifest create ${{ env.PLUGIN_NAME }}:latest \
               ${{ env.PLUGIN_NAME }}-amd64:latest \
-              ${{ env.PLUGIN_NAME }}-arm64:latest
+              ${{ env.PLUGIN_NAME }}-arm64:latest || {
+              echo "Failed to create latest manifest, trying without explicit pulls..."
+              docker manifest create --amend ${{ env.PLUGIN_NAME }}:latest \
+                ${{ env.PLUGIN_NAME }}-amd64:latest \
+                ${{ env.PLUGIN_NAME }}-arm64:latest
+            }
             
             docker manifest push ${{ env.PLUGIN_NAME }}:latest
           fi
