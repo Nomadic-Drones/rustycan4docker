@@ -1,6 +1,6 @@
 [package]
 name = "rustycan4docker"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Jonathan Haws <jonathan.haws@witricity.com>"]
 license = "MIT"
