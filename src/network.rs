@@ -44,7 +44,7 @@ pub struct Network {
     canid: String,
     ifc: String,
     created: bool,
-    endpoint_list: Arc<RwLock<HashMap<String, Endpoint>>>,
+    pub endpoint_list: Arc<RwLock<HashMap<String, Endpoint>>>,
     rules_list: Arc<RwLock<Vec<(String, String)>>>,
 }
 
@@ -95,6 +95,108 @@ impl Network {
         }
     }
 
+    /// Check if the network's VCAN interface exists in the kernel
+    fn network_interface_exists(&self) -> bool {
+        match interfaces::Interface::get_all() {
+            Ok(ifcs) => {
+                for i in ifcs.into_iter() {
+                    if i.name == self.ifc {
+                        return true;
+                    }
+                }
+                false
+            }
+            Err(_) => {
+                eprintln!(" !! Failed to query network interfaces");
+                false
+            }
+        }
+    }
+
+    /// Recreate the network's VCAN interface if it's missing
+    /// This is called during post-reboot recovery
+    fn ensure_network_interface_exists(&mut self) -> Result<(), String> {
+        if self.network_interface_exists() {
+            return Ok(());
+        }
+
+        println!(" -> Network interface {} missing after reboot, recreating...", self.ifc);
+        
+        // Create the VCAN interface
+        let output = std::process::Command::new("ip")
+            .arg("link")
+            .arg("add")
+            .arg("dev")
+            .arg(&self.ifc)
+            .arg("type")
+            .arg("vcan")
+            .output();
+
+        match output {
+            Ok(result) => {
+                if !result.status.success() {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    if stderr.contains("File exists") {
+                        println!(" -> Interface {} was created concurrently, continuing", self.ifc);
+                        return Ok(());
+                    }
+                    return Err(format!(" !! Failed to recreate VCAN device {}: {}", self.ifc, stderr));
+                }
+            }
+            Err(e) => return Err(format!(" !! Failed to execute ip command: {}", e)),
+        }
+
+        // Bring up the interface
+        let output = std::process::Command::new("ip")
+            .arg("link")
+            .arg("set")
+            .arg("up")
+            .arg(&self.ifc)
+            .output();
+
+        match output {
+            Ok(result) => {
+                if !result.status.success() {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    return Err(format!(" !! Failed to bring up VCAN device {}: {}", self.ifc, stderr));
+                }
+            }
+            Err(e) => return Err(format!(" !! Failed to execute ip command: {}", e)),
+        }
+
+        println!(" -> Successfully recreated network interface: {}", self.ifc);
+        self.created = true;
+        
+        Ok(())
+    }
+
+    /// Validate that all network interfaces and rules are properly configured
+    /// Returns true if everything is OK, false if issues were found
+    pub fn validate_network_health(&self) -> bool {
+        let mut healthy = true;
+
+        // Check network interface
+        if !self.network_interface_exists() {
+            eprintln!(" !! Health check FAILED: Network interface {} does not exist", self.ifc);
+            healthy = false;
+        } else {
+            println!(" -> Health check OK: Network interface {} exists", self.ifc);
+        }
+
+        // Check all endpoints
+        let map = self.endpoint_list.read();
+        for (uid, ep) in map.iter() {
+            if !ep.interface_exists() {
+                eprintln!(" !! Health check FAILED: Endpoint {} interface {} does not exist", uid, ep.device);
+                healthy = false;
+            } else {
+                println!(" -> Health check OK: Endpoint {} interface {} exists", uid, ep.device);
+            }
+        }
+
+        healthy
+    }
+
     pub fn endpoint_add(&mut self, ep: Endpoint) {
         // Add the endpoint to the list
         self.endpoint_list.write().insert(ep.uid.clone(), ep);
@@ -114,6 +216,45 @@ impl Network {
         _namespace: String,
         peer: String,
     ) -> Result<JoinResponse, Error> {
+        // REBOOT RESILIENCE: Ensure network interface exists before proceeding
+        // After system reboot, Docker metadata persists but kernel interfaces don't.
+        // This check recreates missing interfaces transparently during container restart.
+        if let Err(e) = self.ensure_network_interface_exists() {
+            eprintln!(" !! Failed to ensure network interface exists: {}", e);
+            return Err(Error);
+        }
+
+        // Drop read lock before acquiring write lock to avoid deadlock
+        let endpoint_exists = {
+            let map = self.endpoint_list.read();
+            map.contains_key(&epuid)
+        };
+
+        if !endpoint_exists {
+            eprintln!(" !! Endpoint {} not found in network", epuid);
+            return Err(Error);
+        }
+
+        // REBOOT RESILIENCE: Check and recreate endpoint's vxcan interface if missing
+        // We need mutable access to the endpoint to call ensure_interface_exists
+        {
+            let mut map = self.endpoint_list.write();
+            if let Some(ep) = map.get_mut(&epuid) {
+                match ep.ensure_interface_exists() {
+                    Ok(recreated) => {
+                        if recreated {
+                            println!(" -> Endpoint {} interfaces were recreated after reboot", epuid);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(" !! Failed to ensure endpoint interface exists: {}", e);
+                        return Err(Error);
+                    }
+                }
+            }
+        }
+
+        // Now proceed with normal cangw rule creation
         let map = self.endpoint_list.read();
         match map.get(&epuid) {
             Some(ep) => {
@@ -123,6 +264,13 @@ impl Network {
 
                 for (uid, endpt) in map.iter() {
                     if uid.ne(&epuid) {
+                        // REBOOT RESILIENCE: Check other endpoints too
+                        // In case multiple containers are restarting simultaneously
+                        if !endpt.interface_exists() {
+                            println!(" -> Warning: Peer endpoint {} interface missing, skipping cross-rules for now", uid);
+                            continue;
+                        }
+                        
                         // Add cangw rules: other->endpoint, endpoint->other
                         self.add_cangw_rule(&endpt.device, &ep.device);
                         self.add_cangw_rule(&ep.device, &endpt.device);
