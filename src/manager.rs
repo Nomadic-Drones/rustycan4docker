@@ -66,19 +66,6 @@ impl NetworkManager {
         mgr
     }
     
-    /// Save network configurations to persistent storage
-    fn save_networks_to_file(&self) {
-        let map = self.network_list.read();
-        let mut configs: HashMap<String, NetworkConfig> = HashMap::new();
-        
-        // Extract configuration from each network
-        for (nuid, network) in map.iter() {
-            // We can't directly access private fields, so we'll need to store this during creation
-            // For now, skip this - we'll populate it during network_create
-        }
-        drop(map);
-    }
-    
     /// Load network configurations from persistent storage
     fn load_networks_from_file(&self) {
         // Create directory if it doesn't exist
@@ -112,6 +99,14 @@ impl NetworkManager {
     }
 
     pub async fn network_load(&self) {
+        // Check if persisted state file exists
+        // If it doesn't exist, skip loading from Docker (fresh start scenario)
+        if !std::path::Path::new(NETWORK_STATE_FILE).exists() {
+            println!(" -> No persisted network state found, starting fresh (skipping Docker network load)");
+            return;
+        }
+
+        println!(" -> Persisted state file found, loading networks from Docker...");
         let connection = Docker::connect_with_unix_defaults().unwrap();
 
         let list_networks_filters: HashMap<&str, Vec<&str>> = HashMap::new();

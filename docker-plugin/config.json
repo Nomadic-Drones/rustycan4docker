@@ -9,6 +9,15 @@
 	"types": ["docker.networkdriver/1.0"],
 	"socket": "rustyvxcan.sock"
     },
+    "propagatedMount": "/var/lib/docker/network/files",
+    "mounts": [
+        {
+            "source": "/var/lib/docker/network/files",
+            "destination": "/var/lib/docker/network/files",
+            "type": "bind",
+            "options": ["rbind", "rw"]
+        }
+    ],
     "linux": {
 	"capabilities": ["CAP_NET_ADMIN"]
     }
