@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  # Minimal test container - just needs to attach to CAN network
+  can-test:
+    image: alpine:latest
+    container_name: can-test-simple
+    networks:
+      - canbus0
+    command: |
+      sh -c '
+        echo "=== CAN Test Container Started ==="
+        echo "Interface check:"
+        ip link show can0 && echo "✓ CAN interface exists!" || echo "✗ CAN interface NOT found!"
+        echo "Keeping container alive..."
+        sleep infinity
+      '
+    restart: unless-stopped
+
+networks:
+  canbus0:
+    driver: nomadicdrones/rustycan4docker:latest
+    driver_opts:
+      vxcan.dev: can
+      vxcan.peer: can
+      vxcan.id: 0
+

@@ -28,20 +28,86 @@ use crate::endpoint::Endpoint;
 use crate::network::{JoinResponse, Network};
 use bollard::network::ListNetworksOptions;
 use bollard::Docker;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, Mutex};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Error;
+use std::fs;
 use std::sync::Arc;
+
+// Persisted network configuration
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct NetworkConfig {
+    device: String,
+    peer: String,
+    canid: String,
+}
+
+const NETWORK_STATE_FILE: &str = "/var/lib/docker/network/files/rustycan4docker-networks.json";
 
 #[derive(Clone)]
 pub struct NetworkManager {
     network_list: Arc<RwLock<HashMap<String, Network>>>,
+    // Mutex to prevent concurrent network_load operations
+    // This prevents race conditions when multiple containers start simultaneously
+    load_mutex: Arc<Mutex<()>>,
 }
 
 impl NetworkManager {
     pub fn new() -> Self {
-        NetworkManager {
+        let mgr = NetworkManager {
             network_list: Arc::new(RwLock::new(HashMap::new())),
+            load_mutex: Arc::new(Mutex::new(())),
+        };
+        
+        // Try to load persisted networks from file
+        mgr.load_networks_from_file();
+        
+        mgr
+    }
+    
+    /// Save network configurations to persistent storage
+    fn save_networks_to_file(&self) {
+        let map = self.network_list.read();
+        let mut configs: HashMap<String, NetworkConfig> = HashMap::new();
+        
+        // Extract configuration from each network
+        for (nuid, network) in map.iter() {
+            // We can't directly access private fields, so we'll need to store this during creation
+            // For now, skip this - we'll populate it during network_create
+        }
+        drop(map);
+    }
+    
+    /// Load network configurations from persistent storage
+    fn load_networks_from_file(&self) {
+        // Create directory if it doesn't exist
+        if let Some(parent) = std::path::Path::new(NETWORK_STATE_FILE).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        
+        match fs::read_to_string(NETWORK_STATE_FILE) {
+            Ok(contents) => {
+                match serde_json::from_str::<HashMap<String, NetworkConfig>>(&contents) {
+                    Ok(configs) => {
+                        println!(" -> Loaded {} network configurations from file", configs.len());
+                        let mut map = self.network_list.write();
+                        for (nuid, config) in configs {
+                            let nw = Network::new(config.device, config.peer, config.canid);
+                            map.insert(nuid, nw);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(" !! Failed to parse network state file: {}", e);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                println!(" -> No persisted network state found (first run)");
+            }
+            Err(e) => {
+                eprintln!(" !! Failed to read network state file: {}", e);
+            }
         }
     }
 
@@ -96,10 +162,42 @@ impl NetworkManager {
 
         match self.options_parse(options) {
             Ok((d, p, c)) => {
-                let nw = Network::new(d, p, c);
-                self.network_list.write().insert(uid, nw);
+                let nw = Network::new(d.clone(), p.clone(), c.clone());
+                self.network_list.write().insert(uid.clone(), nw);
+                
+                // Persist network configuration to file
+                self.persist_network_config(uid, d, p, c);
             }
             Err(_) => {}
+        }
+    }
+    
+    /// Persist a single network configuration
+    fn persist_network_config(&self, nuid: String, device: String, peer: String, canid: String) {
+        // Create directory if it doesn't exist
+        if let Some(parent) = std::path::Path::new(NETWORK_STATE_FILE).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        
+        // Load existing configs
+        let mut configs: HashMap<String, NetworkConfig> = match fs::read_to_string(NETWORK_STATE_FILE) {
+            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        };
+        
+        // Add/update this network
+        configs.insert(nuid, NetworkConfig { device, peer, canid });
+        
+        // Save back to file
+        match serde_json::to_string_pretty(&configs) {
+            Ok(json) => {
+                if let Err(e) = fs::write(NETWORK_STATE_FILE, json) {
+                    eprintln!(" !! Failed to persist network configuration: {}", e);
+                }
+            }
+            Err(e) => {
+                eprintln!(" !! Failed to serialize network configuration: {}", e);
+            }
         }
     }
 
@@ -108,6 +206,19 @@ impl NetworkManager {
         if map.contains_key(&uid) {
             println!(" -> Network {uid} exists...removing!");
             map.remove(&uid);
+        }
+        drop(map);
+        
+        // Remove from persisted configuration
+        let mut configs: HashMap<String, NetworkConfig> = match fs::read_to_string(NETWORK_STATE_FILE) {
+            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        };
+        
+        configs.remove(&uid);
+        
+        if let Ok(json) = serde_json::to_string_pretty(&configs) {
+            let _ = fs::write(NETWORK_STATE_FILE, json);
         }
     }
 
@@ -138,6 +249,15 @@ impl NetworkManager {
         };
     }
 
+    /// Attach an endpoint to a network with full reboot resilience and race condition protection
+    /// 
+    /// This method implements a multi-stage synchronization strategy:
+    /// 1. Network loading is protected by load_mutex to prevent concurrent loads
+    /// 2. Endpoint creation uses double-checked locking pattern
+    /// 3. Locks are acquired in consistent order to prevent deadlocks
+    /// 4. Write locks are only held when necessary to minimize contention
+    /// 
+    /// Thread-safe for concurrent calls from multiple containers starting simultaneously
     pub fn endpoint_attach(
         &self,
         nuid: String,
@@ -145,28 +265,138 @@ impl NetworkManager {
         _sbox: String,
         options: String,
     ) -> Result<JoinResponse, Error> {
-        // Lock the network list
+        // REBOOT RESILIENCE: Check if network exists in memory
+        // If network_load() failed during startup (Docker socket not ready),
+        // the network won't be in memory. We need to load it on-demand.
+        let network_exists = {
+            let map = self.network_list.read();
+            map.contains_key(&nuid)
+        };
+
+        if !network_exists {
+            println!(" -> Network {} not found in memory (post-reboot recovery), loading from persisted state...", nuid);
+            
+            // CRITICAL SECTION: Use mutex to prevent concurrent network loads
+            let _load_guard = self.load_mutex.lock();
+            
+            // Double-check: another thread may have loaded the network while we waited
+            {
+                let map = self.network_list.read();
+                if map.contains_key(&nuid) {
+                    println!(" -> Network {} was loaded by another thread, continuing", nuid);
+                    drop(map);
+                    drop(_load_guard);
+                } else {
+                    drop(map);
+                    
+                    // Load from persisted configuration file
+                    match fs::read_to_string(NETWORK_STATE_FILE) {
+                        Ok(contents) => {
+                            match serde_json::from_str::<HashMap<String, NetworkConfig>>(&contents) {
+                                Ok(configs) => {
+                                    if let Some(config) = configs.get(&nuid) {
+                                        println!(" -> Found network {} in persisted state: device={}, peer={}, id={}", 
+                                            nuid, config.device, config.peer, config.canid);
+                                        
+                                        // Create the network object
+                                        let nw = Network::new(
+                                            config.device.clone(),
+                                            config.peer.clone(),
+                                            config.canid.clone()
+                                        );
+                                        
+                                        let mut map = self.network_list.write();
+                                        map.insert(nuid.clone(), nw);
+                                        drop(map);
+                                        
+                                        println!(" -> Successfully recovered network {} from persisted state", nuid);
+                                    } else {
+                                        drop(_load_guard);
+                                        eprintln!(" !! Network {} not found in persisted state - network may not exist", nuid);
+                                        return Err(Error);
+                                    }
+                                }
+                                Err(e) => {
+                                    drop(_load_guard);
+                                    eprintln!(" !! Failed to parse network state file: {}", e);
+                                    return Err(Error);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            drop(_load_guard);
+                            eprintln!(" !! Failed to read network state file: {}", e);
+                            return Err(Error);
+                        }
+                    }
+                    
+                    drop(_load_guard);
+                }
+            }
+        }
+
+        // Lock the network list for reading first (lower contention)
+        let map = self.network_list.read();
+        let network_ref = match map.get(&nuid) {
+            Some(n) => n,
+            None => {
+                drop(map);
+                eprintln!(" !! Network {} not found during endpoint attach (should not happen)", nuid);
+                return Err(Error);
+            }
+        };
+
+        // REBOOT RESILIENCE: Check if endpoint exists in memory
+        // After reboot, Docker's metadata persists but our in-memory endpoint list doesn't.
+        // If the endpoint is missing, recreate it transparently.
+        let endpoint_exists = {
+            let ep_map = network_ref.endpoint_list.read();
+            ep_map.contains_key(&epuid)
+        };
+
+        // Release read lock before potentially acquiring write lock
+        drop(map);
+
+        // If endpoint doesn't exist, we need to create it
+        // Upgrade to write lock only if necessary
+        if !endpoint_exists {
+            println!(" -> Endpoint {} not found in memory (likely post-reboot), recreating...", epuid);
+            
+            // Acquire write lock on network list to add endpoint
+            let mut map_write = self.network_list.write();
+            let n = match map_write.get_mut(&nuid) {
+                Some(network) => network,
+                None => {
+                    drop(map_write);
+                    eprintln!(" !! Network {} disappeared during endpoint creation", nuid);
+                    return Err(Error);
+                }
+            };
+            
+            // Double-check: another thread may have created the endpoint while we waited for write lock
+            let still_missing = {
+                let ep_map = n.endpoint_list.read();
+                !ep_map.contains_key(&epuid)
+            };
+            
+            if still_missing {
+                // Recreate the endpoint
+                let ep = Endpoint::new(epuid.clone());
+                n.endpoint_add(ep);
+                println!(" -> Successfully recreated endpoint {} after reboot", epuid);
+            } else {
+                println!(" -> Endpoint {} was created by another thread, continuing", epuid);
+            }
+            
+            // Release write lock before continuing
+            drop(map_write);
+        }
+
+        // Now perform the actual endpoint attach operation
+        // Acquire write lock one final time for the attach operation
         let mut map = self.network_list.write();
         match map.get_mut(&nuid) {
             Some(n) => {
-                // REBOOT RESILIENCE: Check if endpoint exists in memory
-                // After reboot, Docker's metadata persists but our in-memory endpoint list doesn't.
-                // If the endpoint is missing, recreate it transparently.
-                let endpoint_exists = {
-                    let ep_map = n.endpoint_list.read();
-                    ep_map.contains_key(&epuid)
-                };
-
-                if !endpoint_exists {
-                    println!(" -> Endpoint {} not found in memory (likely post-reboot), recreating...", epuid);
-                    
-                    // Recreate the endpoint
-                    let ep = Endpoint::new(epuid.clone());
-                    n.endpoint_add(ep);
-                    
-                    println!(" -> Successfully recreated endpoint {} after reboot", epuid);
-                }
-
                 let peer = match serde_json::from_str::<serde_json::Value>(&options) {
                     Ok(v) => match v["vxcan.peer"].as_str() {
                         Some(u) => u.to_string(),
@@ -182,7 +412,7 @@ impl NetworkManager {
                 Ok(rsp)
             }
             None => {
-                eprintln!(" !! Network {} not found during endpoint attach", nuid);
+                eprintln!(" !! Network {} not found during endpoint attach (should not happen)", nuid);
                 Err(Error)
             }
         }
