@@ -35,6 +35,88 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    /// Check if the endpoint's vxcan interface exists in the kernel
+    pub fn interface_exists(&self) -> bool {
+        match interfaces::Interface::get_all() {
+            Ok(ifcs) => {
+                for i in ifcs.into_iter() {
+                    if i.name == self.device {
+                        return true;
+                    }
+                }
+                false
+            }
+            Err(_) => {
+                eprintln!(" !! Failed to query network interfaces");
+                false
+            }
+        }
+    }
+
+    /// Recreate the vxcan interface pair if it's missing
+    /// Returns true if interfaces were recreated, false if they already existed
+    pub fn ensure_interface_exists(&mut self) -> Result<bool, String> {
+        if self.interface_exists() {
+            println!(" -> Interface {} already exists, no recreation needed", self.device);
+            return Ok(false);
+        }
+
+        println!(" -> Interface {} missing after reboot, recreating...", self.device);
+        
+        // Try to create the vxcan pair
+        let output = std::process::Command::new("ip")
+            .arg("link")
+            .arg("add")
+            .arg("dev")
+            .arg(&self.device)
+            .arg("type")
+            .arg("vxcan")
+            .arg("peer")
+            .arg("name")
+            .arg(&self.peer)
+            .output();
+
+        match output {
+            Ok(result) => {
+                if !result.status.success() {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    // Check if error is "File exists" - that means interface was created by another thread
+                    if stderr.contains("File exists") {
+                        println!(" -> Interface {} was created concurrently, continuing", self.device);
+                        return Ok(false);
+                    }
+                    return Err(format!(" !! Failed to recreate vxcan device {}: {}", self.device, stderr));
+                }
+            }
+            Err(e) => return Err(format!(" !! Failed to execute ip command: {}", e)),
+        }
+
+        // Bring up the interface
+        let output = std::process::Command::new("ip")
+            .arg("link")
+            .arg("set")
+            .arg("up")
+            .arg(&self.device)
+            .output();
+
+        match output {
+            Ok(result) => {
+                if !result.status.success() {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    return Err(format!(" !! Failed to bring up vxcan device {}: {}", self.device, stderr));
+                }
+            }
+            Err(e) => return Err(format!(" !! Failed to execute ip command: {}", e)),
+        }
+
+        println!(" -> Successfully recreated interface pair: {} <-> {}", self.device, self.peer);
+        
+        // Mark as created so we clean it up properly on drop
+        self.created = true;
+        
+        Ok(true)
+    }
+
     pub fn new(uid: String) -> Self {
         println!("Creating a new endpoint: {uid}");
         let ifcs = interfaces::Interface::get_all().unwrap();

@@ -1,8 +1,8 @@
 [package]
 name = "rustycan4docker"
-version = "0.1.2"
+version = "0.1.4"
 edition = "2021"
-authors = ["Jonathan Haws <jonathan.haws@witricity.com>"]
+authors = ["Jonathan Haws <jonathan.haws@witricity.com>", "Andreas Moldskred <andreas@nomadicdrones.com", "Sandesh Sharma <sandesh@nomadicdrones.com>"]
 license = "MIT"
 description = "Rust-based VXCAN Docker plugin"
 repository = "https://github.com/Nomadic-Drones/rustycan4docker"

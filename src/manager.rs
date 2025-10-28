@@ -149,6 +149,24 @@ impl NetworkManager {
         let mut map = self.network_list.write();
         match map.get_mut(&nuid) {
             Some(n) => {
+                // REBOOT RESILIENCE: Check if endpoint exists in memory
+                // After reboot, Docker's metadata persists but our in-memory endpoint list doesn't.
+                // If the endpoint is missing, recreate it transparently.
+                let endpoint_exists = {
+                    let ep_map = n.endpoint_list.read();
+                    ep_map.contains_key(&epuid)
+                };
+
+                if !endpoint_exists {
+                    println!(" -> Endpoint {} not found in memory (likely post-reboot), recreating...", epuid);
+                    
+                    // Recreate the endpoint
+                    let ep = Endpoint::new(epuid.clone());
+                    n.endpoint_add(ep);
+                    
+                    println!(" -> Successfully recreated endpoint {} after reboot", epuid);
+                }
+
                 let peer = match serde_json::from_str::<serde_json::Value>(&options) {
                     Ok(v) => match v["vxcan.peer"].as_str() {
                         Some(u) => u.to_string(),
@@ -159,11 +177,14 @@ impl NetworkManager {
 
                 let namespace = String::new();
 
-                // Add the endpoint to the network
+                // Add the endpoint to the network (or reattach after reboot)
                 let rsp = n.endpoint_attach(epuid, namespace, peer)?;
                 Ok(rsp)
             }
-            None => Err(Error),
+            None => {
+                eprintln!(" !! Network {} not found during endpoint attach", nuid);
+                Err(Error)
+            }
         }
     }
 
