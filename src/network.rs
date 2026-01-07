@@ -187,7 +187,7 @@ impl Network {
         let map = self.endpoint_list.read();
         for (_uid, ep) in map.iter() {
             if !ep.interface_exists() {
-                eprintln!(" !! Health check FAILED: An endpoint interface {} does not exist", ep.device);
+                eprintln!(" !! Health check FAILED: Endpoint interface {} does not exist", ep.device);
                 healthy = false;
             } else {
                 println!(" -> Health check OK: Endpoint interface {} exists", ep.device);
