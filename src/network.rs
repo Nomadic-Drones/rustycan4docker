@@ -185,12 +185,12 @@ impl Network {
 
         // Check all endpoints
         let map = self.endpoint_list.read();
-        for (uid, ep) in map.iter() {
+        for (_uid, ep) in map.iter() {
             if !ep.interface_exists() {
-                eprintln!(" !! Health check FAILED: Endpoint {} interface {} does not exist", uid, ep.device);
+                eprintln!(" !! Health check FAILED: An endpoint interface {} does not exist", ep.device);
                 healthy = false;
             } else {
-                println!(" -> Health check OK: Endpoint {} interface {} exists", uid, ep.device);
+                println!(" -> Health check OK: Endpoint interface {} exists", ep.device);
             }
         }
 
@@ -205,7 +205,7 @@ impl Network {
     pub fn endpoint_remove(&mut self, uid: String) {
         let mut map = self.endpoint_list.write();
         if map.contains_key(&uid) {
-            println!(" -> Endpoint {uid} exists...removing!");
+            println!(" -> Endpoint exists...removing!");
             map.remove(&uid);
         }
     }
@@ -231,7 +231,7 @@ impl Network {
         };
 
         if !endpoint_exists {
-            eprintln!(" !! Endpoint {} not found in network", epuid);
+            eprintln!(" !! Endpoint not found in network");
             return Err(Error);
         }
 
@@ -243,7 +243,7 @@ impl Network {
                 match ep.ensure_interface_exists() {
                     Ok(recreated) => {
                         if recreated {
-                            println!(" -> Endpoint {} interfaces were recreated after reboot", epuid);
+                            println!(" -> Endpoint interfaces were recreated after reboot");
                         }
                     }
                     Err(e) => {

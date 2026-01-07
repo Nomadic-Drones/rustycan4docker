@@ -199,7 +199,7 @@ impl NetworkManager {
     pub fn network_delete(&self, uid: String) {
         let mut map = self.network_list.write();
         if map.contains_key(&uid) {
-            println!(" -> Network {uid} exists...removing!");
+            println!(" -> Network exists...removing!");
             map.remove(&uid);
         }
         drop(map);
@@ -269,7 +269,7 @@ impl NetworkManager {
         };
 
         if !network_exists {
-            println!(" -> Network {} not found in memory (post-reboot recovery), loading from persisted state...", nuid);
+            println!(" -> Network not found in memory (post-reboot recovery), loading from persisted state...");
             
             // CRITICAL SECTION: Use mutex to prevent concurrent network loads
             let _load_guard = self.load_mutex.lock();
@@ -278,7 +278,7 @@ impl NetworkManager {
             {
                 let map = self.network_list.read();
                 if map.contains_key(&nuid) {
-                    println!(" -> Network {} was loaded by another thread, continuing", nuid);
+                    println!(" -> Network was loaded by another thread, continuing");
                     drop(map);
                     drop(_load_guard);
                 } else {
@@ -290,8 +290,8 @@ impl NetworkManager {
                             match serde_json::from_str::<HashMap<String, NetworkConfig>>(&contents) {
                                 Ok(configs) => {
                                     if let Some(config) = configs.get(&nuid) {
-                                        println!(" -> Found network {} in persisted state: device={}, peer={}, id={}", 
-                                            nuid, config.device, config.peer, config.canid);
+                                        println!(" -> Found network in persisted state: device={}, peer={}, id={}", 
+                                            config.device, config.peer, config.canid);
                                         
                                         // Create the network object
                                         let nw = Network::new(
@@ -304,10 +304,10 @@ impl NetworkManager {
                                         map.insert(nuid.clone(), nw);
                                         drop(map);
                                         
-                                        println!(" -> Successfully recovered network {} from persisted state", nuid);
+                                        println!(" -> Successfully recovered network from persisted state");
                                     } else {
                                         drop(_load_guard);
-                                        eprintln!(" !! Network {} not found in persisted state - network may not exist", nuid);
+                                        eprintln!(" !! Network not found in persisted state - network may not exist");
                                         return Err(Error);
                                     }
                                 }
@@ -336,7 +336,7 @@ impl NetworkManager {
             Some(n) => n,
             None => {
                 drop(map);
-                eprintln!(" !! Network {} not found during endpoint attach (should not happen)", nuid);
+                eprintln!(" !! Network not found during endpoint attach (should not happen)");
                 return Err(Error);
             }
         };
@@ -355,7 +355,7 @@ impl NetworkManager {
         // If endpoint doesn't exist, we need to create it
         // Upgrade to write lock only if necessary
         if !endpoint_exists {
-            println!(" -> Endpoint {} not found in memory (likely post-reboot), recreating...", epuid);
+            println!(" -> Endpoint not found in memory (likely post-reboot), recreating...");
             
             // Acquire write lock on network list to add endpoint
             let mut map_write = self.network_list.write();
@@ -363,7 +363,7 @@ impl NetworkManager {
                 Some(network) => network,
                 None => {
                     drop(map_write);
-                    eprintln!(" !! Network {} disappeared during endpoint creation", nuid);
+                    eprintln!(" !! Network disappeared during endpoint creation");
                     return Err(Error);
                 }
             };
@@ -378,9 +378,9 @@ impl NetworkManager {
                 // Recreate the endpoint
                 let ep = Endpoint::new(epuid.clone());
                 n.endpoint_add(ep);
-                println!(" -> Successfully recreated endpoint {} after reboot", epuid);
+                println!(" -> Successfully recreated endpoint after reboot");
             } else {
-                println!(" -> Endpoint {} was created by another thread, continuing", epuid);
+                println!(" -> Endpoint was created by another thread, continuing");
             }
             
             // Release write lock before continuing
@@ -407,7 +407,7 @@ impl NetworkManager {
                 Ok(rsp)
             }
             None => {
-                eprintln!(" !! Network {} not found during endpoint attach (should not happen)", nuid);
+                eprintln!(" !! Network not found during endpoint attach (should not happen)");
                 Err(Error)
             }
         }
