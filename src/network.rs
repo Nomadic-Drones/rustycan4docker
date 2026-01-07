@@ -267,7 +267,7 @@ impl Network {
                         // REBOOT RESILIENCE: Check other endpoints too
                         // In case multiple containers are restarting simultaneously
                         if !endpt.interface_exists() {
-                            println!(" -> Warning: Peer endpoint {} interface missing, skipping cross-rules for now", uid);
+                            println!(" -> Warning: A peer endpoint interface is missing, skipping cross-rules for now");
                             continue;
                         }
                         
