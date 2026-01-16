@@ -118,7 +118,7 @@ impl Endpoint {
     }
 
     pub fn new(uid: String) -> Self {
-        println!("Creating a new endpoint: {uid}");
+        println!("Creating a new endpoint");
         let ifcs = interfaces::Interface::get_all().unwrap();
 
         let mut exists: bool = false;
