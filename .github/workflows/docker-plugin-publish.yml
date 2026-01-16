@@ -59,11 +59,9 @@ jobs:
           
           # Build architecture-specific plugin
           export PLUGIN_NAME="${{ env.PLUGIN_NAME }}-${{ matrix.arch }}:${{ steps.extract_version.outputs.version }}"
-          export PLUGIN_NAME_LATEST="${{ env.PLUGIN_NAME }}-${{ matrix.arch }}:latest"
           
           # Debug: Show what we're building
           echo "Building plugin with name: $PLUGIN_NAME"
-          echo "Latest plugin name: $PLUGIN_NAME_LATEST"
           echo "Architecture: ${{ matrix.arch }}"
           echo "Version: ${{ steps.extract_version.outputs.version }}"
           
@@ -146,17 +144,3 @@ jobs:
           
           docker manifest push ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }}
           
-          # Create manifest for latest if this is a release
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "Creating latest manifest..."
-            docker manifest create ${{ env.PLUGIN_NAME }}:latest \
-              ${{ env.PLUGIN_NAME }}-amd64:latest \
-              ${{ env.PLUGIN_NAME }}-arm64:latest || {
-              echo "Failed to create latest manifest, trying without explicit pulls..."
-              docker manifest create --amend ${{ env.PLUGIN_NAME }}:latest \
-                ${{ env.PLUGIN_NAME }}-amd64:latest \
-                ${{ env.PLUGIN_NAME }}-arm64:latest
-            }
-            
-            docker manifest push ${{ env.PLUGIN_NAME }}:latest
-          fi
