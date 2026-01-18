@@ -118,18 +118,11 @@ jobs:
         run: |
           # Wait a moment for plugins to be available
           sleep 10
-          
-          # Check if both architecture plugins exist
-          echo "Checking for required plugins..."
-          if ! docker plugin ls --format "{{.Repository}}" | grep -q "${{ env.PLUGIN_NAME }}-amd64"; then
-            echo "AMD64 plugin not found in registry"
-            docker search ${{ env.PLUGIN_NAME }}-amd64 || echo "Search failed"
-          fi
-          
-          if ! docker plugin ls --format "{{.Repository}}" | grep -q "${{ env.PLUGIN_NAME }}-arm64"; then
-            echo "ARM64 plugin not found in registry"
-            docker search ${{ env.PLUGIN_NAME }}-arm64 || echo "Search failed"
-          fi
+
+          # Pull both architecture-specific plugins from the registry so manifest creation has local references
+          echo "Pulling architecture plugins from registry..."
+          docker plugin install --disable --grant-all-permissions ${{ env.PLUGIN_NAME }}-amd64:${{ steps.extract_version.outputs.version }}
+          docker plugin install --disable --grant-all-permissions ${{ env.PLUGIN_NAME }}-arm64:${{ steps.extract_version.outputs.version }}
           
           # Create manifest for versioned release
           echo "Creating manifest for version ${{ steps.extract_version.outputs.version }}"
@@ -141,6 +134,14 @@ jobs:
               ${{ env.PLUGIN_NAME }}-amd64:${{ steps.extract_version.outputs.version }} \
               ${{ env.PLUGIN_NAME }}-arm64:${{ steps.extract_version.outputs.version }}
           }
+
+          # Explicitly annotate platforms so push succeeds
+          docker manifest annotate ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }} \
+            ${{ env.PLUGIN_NAME }}-amd64:${{ steps.extract_version.outputs.version }} \
+            --os linux --arch amd64
+          docker manifest annotate ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }} \
+            ${{ env.PLUGIN_NAME }}-arm64:${{ steps.extract_version.outputs.version }} \
+            --os linux --arch arm64
           
           docker manifest push ${{ env.PLUGIN_NAME }}:${{ steps.extract_version.outputs.version }}
           
