@@ -7,6 +7,10 @@ After=network.target
 Type=simple
 ExecStartPre=/usr/bin/mkdir -p /run/docker/plugins
 ExecStart=/usr/bin/rustycan4docker
+TimeoutStopSec=10s
+KillMode=mixed
+KillSignal=SIGTERM
+ExecStopPost=/bin/rm -f /run/docker/plugins/rustyvxcan.sock
 
 [Install]
 WantedBy=multi-user.target
