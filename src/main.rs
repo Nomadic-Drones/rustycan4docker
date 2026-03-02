@@ -29,6 +29,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::vec::Vec;
 use tokio::net::UnixListener;
+use tokio::signal;
+use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnixListenerStream;
 use warp::{http, Filter};
 
@@ -387,6 +389,34 @@ async fn api_discover_delete(
     Ok(warp::reply::with_status("{}", http::StatusCode::OK))
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            println!("Received Ctrl+C signal, shutting down gracefully...");
+        },
+        _ = terminate => {
+            println!("Received SIGTERM signal, shutting down gracefully...");
+        },
+    }
+}
+
 fn log_body(_payload: &bytes::Bytes) {
     // println!(
     //     "Request body: {}",
@@ -490,12 +520,22 @@ async fn main() {
         .or(nw_leave)
         .or(dsc_new)
         .or(dsc_del);
+    let (tx, rx) = oneshot::channel::<()>();
+
     #[cfg(not(feature = "ip_based_plugin"))]
     {
         let incoming = UnixListenerStream::new(
             UnixListener::bind("/run/docker/plugins/rustyvxcan.sock").unwrap(),
         );
-        warp::serve(routes).run_incoming(incoming).await;
+        let server = warp::serve(routes).serve_incoming_with_graceful_shutdown(incoming, async {
+            rx.await.ok();
+        });
+
+        let server_task = tokio::spawn(server);
+
+        shutdown_signal().await;
+        let _ = tx.send(());
+        server_task.await.unwrap();
     }
     #[cfg(feature = "ip_based_plugin")]
     {
@@ -507,6 +547,17 @@ async fn main() {
         fs::create_dir_all("/etc/docker/plugins");
         fs::write("/etc/docker/plugins/rustyvxcan.json", content)
             .expect("Unable to write docker plugin file");
-        warp::serve(routes).run(([127, 0, 0, 1], 7373)).await;
+        let (_addr, server) =
+            warp::serve(routes).bind_with_graceful_shutdown(([127, 0, 0, 1], 7373), async {
+                rx.await.ok();
+            });
+
+        let server_task = tokio::spawn(server);
+
+        shutdown_signal().await;
+        let _ = tx.send(());
+        server_task.await.unwrap();
     }
+
+    println!("Server shutdown complete");
 }
